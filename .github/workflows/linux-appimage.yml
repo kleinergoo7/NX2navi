@@ -47,6 +47,15 @@ jobs:
             repo="$parent"
           fi
           echo "repo=${repo}" >> "$GITHUB_OUTPUT"
+          # a release (and its app zip) may live in a different repository than the tag
+          release_repo="$repo"
+          if ! gh release view "$TAG" --repo "$release_repo" >/dev/null 2>&1; then
+            parent=$(gh api "repos/${{ github.repository }}" --jq '.parent.full_name // empty')
+            if [ -n "$parent" ] && gh release view "$TAG" --repo "$parent" >/dev/null 2>&1; then
+              release_repo="$parent"
+            fi
+          fi
+          echo "release_repo=${release_repo}" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:
           repository: ${{ steps.repo.outputs.repo }}
@@ -90,11 +99,15 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/app"
           # make_release.py uploads the zip with the release; wait for it if the release was published first
-          repo="${{ steps.repo.outputs.repo }}"
-          for i in $(seq 1 20); do
-            gh release download "$TAG" --repo "$repo" -p 'NX2navi-app-*.zip' -D "$RUNNER_TEMP/app" && break
-            echo "no app zip on $TAG in $repo yet ($i)"; sleep 30
-          done
+          repo="${{ steps.repo.outputs.release_repo }}"
+          if gh release view "$TAG" --repo "$repo" >/dev/null 2>&1; then
+            for i in $(seq 1 3); do
+              gh release download "$TAG" --repo "$repo" -p 'NX2navi-app-*.zip' -D "$RUNNER_TEMP/app" && break
+              echo "no app zip on $TAG in $repo yet ($i)"; sleep 10
+            done
+          else
+            echo "no release for $TAG in $repo: the AppImage's builds keep the Switch prompts"
+          fi
           unzip -q "$RUNNER_TEMP"/app/NX2navi-app-*.zip 'prompt-art/*' -d "$RUNNER_TEMP/app" || true
           ls -d "$RUNNER_TEMP/app/prompt-art" 2>/dev/null || echo "::warning::no prompt-art in the app zip: the AppImage's builds keep the Switch prompts"
       - name: AppImage
