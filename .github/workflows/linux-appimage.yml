@@ -32,27 +32,25 @@ jobs:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Checkout the release's tag
-        id: checkout
+      - name: The repository the release's tag is in
+        id: repo
         run: |
           set -eu
           repo="${{ github.repository }}"
-          git init -q
-          git remote add origin "https://github.com/${repo}.git"
-          auth="http.https://github.com/.extraheader=AUTHORIZATION: bearer ${GH_TOKEN}"
-          parent=""
-          if ! git -c "$auth" fetch -q --depth 1 origin "refs/tags/${TAG}:refs/tags/${TAG}"; then
+          if ! gh api "repos/${repo}/git/ref/tags/${TAG}" >/dev/null 2>&1; then
             parent=$(gh api "repos/${repo}" --jq '.parent.full_name // empty')
             if [ -z "$parent" ]; then
               echo "::error::${TAG} is no tag of ${repo}, and the repository is no fork"
               exit 1
             fi
-            echo "${TAG} is no tag of this fork: fetching it from ${parent}, where the release was published"
-            git remote add upstream "https://github.com/${parent}.git"
-            git -c "$auth" fetch -q --depth 1 upstream "refs/tags/${TAG}:refs/tags/${TAG}"
+            echo "${TAG} is no tag of this fork: it is in ${parent}, where the release was published"
+            repo="$parent"
           fi
-          git checkout -q "${TAG}"
-          echo "parent=${parent}" >> "$GITHUB_OUTPUT"
+          echo "repo=${repo}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.repo.outputs.repo }}
+          ref: ${{ env.TAG }}
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
@@ -91,19 +89,11 @@ jobs:
       - name: Button art from the release's app zip
         run: |
           mkdir -p "$RUNNER_TEMP/app"
-          # make_release.py uploads the zip with the release; wait for it if the release was published first. The
-          # release may be the fork's own or, on a fork that holds no releases, its parent's.
-          parent="${{ steps.checkout.outputs.parent }}"
-          for r in "${{ github.repository }}" $parent; do
-            [ -n "$r" ] || continue
-            if ! gh release view "$TAG" --repo "$r" >/dev/null 2>&1; then
-              continue
-            fi
-            for i in $(seq 1 20); do
-              gh release download "$TAG" --repo "$r" -p 'NX2navi-app-*.zip' -D "$RUNNER_TEMP/app" && break
-              echo "no app zip on $TAG in $r yet ($i)"; sleep 30
-            done
-            ls "$RUNNER_TEMP"/app/NX2navi-app-*.zip >/dev/null 2>&1 && break
+          # make_release.py uploads the zip with the release; wait for it if the release was published first
+          repo="${{ steps.repo.outputs.repo }}"
+          for i in $(seq 1 20); do
+            gh release download "$TAG" --repo "$repo" -p 'NX2navi-app-*.zip' -D "$RUNNER_TEMP/app" && break
+            echo "no app zip on $TAG in $repo yet ($i)"; sleep 30
           done
           unzip -q "$RUNNER_TEMP"/app/NX2navi-app-*.zip 'prompt-art/*' -d "$RUNNER_TEMP/app" || true
           ls -d "$RUNNER_TEMP/app/prompt-art" 2>/dev/null || echo "::warning::no prompt-art in the app zip: the AppImage's builds keep the Switch prompts"
